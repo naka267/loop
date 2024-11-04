@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>トリムる！</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        input[type="file"] {
+            display: block;
+            margin: 20px auto;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            display: block;
+            margin: 20px auto;
+            padding: 10px 20px;
+            background-color: #333;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #555;
+        }
+        button:disabled {
+            background-color: #999;
+            cursor: not-allowed;
+        }
+        audio {
+            display: block;
+            margin: 20px auto;
+            width: 100%;
+            max-width: 600px;
+        }
+        .range-slider-container {
+            margin: 20px auto;
+            max-width: 600px;
+            padding: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            position: relative;
+        }
+        .range-track {
+            height: 120px;
+            background: #f8f8f8;
+            width: 100%;
+            position: relative;
+            border-radius: 4px;
+            margin: 30px 0;
+            overflow: hidden;
+            border: 1px solid #ddd;
+        }
+        .waveform-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        .range-selected {
+            height: 100%;
+            position: absolute;
+            background-color: rgba(51, 51, 51, 0.1);
+            pointer-events: none;
+            border-left: 2px solid rgba(51, 51, 51, 0.8);
+            border-right: 2px solid rgba(51, 51, 51, 0.8);
+        }
+        .range-handle {
+            width: 8px;
+            height: 100%;
+            background-color: rgba(51, 51, 51, 0.8);
+            position: absolute;
+            top: 0;
+            transform: translateX(-50%);
+            cursor: col-resize;
+        }
+        .range-handle:hover {
+            background-color: #555;
+        }
+        .range-handle:active {
+            cursor: col-resize;
+        }
+        .range-handle::before {
+            content: '';
+            position: absolute;
+            top: calc(50% - 15px);
+            left: 50%;
+            transform: translateX(-50%);
+            width: 2px;
+            height: 30px;
+            background-color: white;
+        }
+        .time-labels {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 10px;
+            font-family: monospace;
+        }
+        .time-label {
+            background-color: #f0f0f0;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 14px;
+        }
+        #loading {
+            display: none;
+            margin: 10px 0;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <h1>トリムる！</h1>
+    <input type="file" id="mp3Upload" accept="audio/mp3">
+    <div class="range-slider-container">
+        <div class="range-track">
+            <canvas class="waveform-canvas" id="waveformCanvas"></canvas>
+            <div class="range-selected"></div>
+            <div class="range-handle" id="startHandle"></div>
+            <div class="range-handle" id="endHandle"></div>
+        </div>
+        <div class="time-labels">
+            <span id="startTime" class="time-label">0.000</span>
+            <span id="endTime" class="time-label">0.000</span>
+        </div>
+    </div>
+    <audio id="audioPlayer" controls loop></audio>
+    <div id="loading">処理中...</div>
+    <button id="downloadButton" onclick="downloadAudio()" disabled>ダウンロード</button>
+
+    <script>
+        let audioDuration = 0;
+        let originalFileName = '';
+        let audioBuffer = null;
+        let audioContext = null;
+        
+        const track = document.querySelector('.range-track');
+        const selection = document.querySelector('.range-selected');
+        const startHandle = document.getElementById('startHandle');
+        const endHandle = document.getElementById('endHandle');
+        const startTimeLabel = document.getElementById('startTime');
+        const endTimeLabel = document.getElementById('endTime');
+        const waveformCanvas = document.getElementById('waveformCanvas');
+        const ctx = waveformCanvas.getContext('2d');
+        
+        let isDragging = false;
+        let currentHandle = null;
+        let startValue = 0;
+        let endValue = 100;
+
+        function drawWaveform(audioBuffer) {
+            const width = waveformCanvas.offsetWidth;
+            const height = waveformCanvas.offsetHeight;
+            
+            const scale = window.devicePixelRatio;
+            waveformCanvas.width = width * scale;
+            waveformCanvas.height = height * scale;
+            ctx.scale(scale, scale);
+            
+            const channelData = audioBuffer.getChannelData(0);
+            const step = Math.ceil(channelData.length / width);
+            const amp = height / 3; 
+
+            ctx.fillStyle = '#f8f8f8';
+            ctx.fillRect(0, 0, width, height);
+            ctx.beginPath();
+            ctx.strokeStyle = '#ddd';
+            ctx.lineWidth = 1;
+            ctx.moveTo(0, height / 2);
+            ctx.lineTo(width, height / 2);
+            ctx.stroke();            ctx.beginPath();
+            ctx.strokeStyle = '#2196F3';            ctx.lineWidth = 2; 
+            
+            for (let i = 0; i < width; i++) {
+                const startIdx = Math.floor(i * step);
+                const endIdx = Math.floor((i + 1) * step);
+                let min = 1.0;
+                let max = -1.0;
+
+                for (let j = startIdx; j < endIdx; j++) {
+                    const value = channelData[j];
+                    if (value < min) min = value;
+                    if (value > max) max = value;
+                }
+
+                const y1 = ((1 + min) * height) / 2;
+                const y2 = ((1 + max) * height) / 2;
+
+                ctx.moveTo(i, y1);
+                ctx.lineTo(i, y2);
+            }
+
+            ctx.stroke();
+        }
+
+        function updateSelection() {
+            const trackRect = track.getBoundingClientRect();
+            const startPercent = (startValue / 100) * trackRect.width;
+            const endPercent = (endValue / 100) * trackRect.width;
+            
+            selection.style.left = `${startPercent}px`;
+            selection.style.width = `${endPercent - startPercent}px`;
+            startHandle.style.left = `${startPercent}px`;
+            endHandle.style.left = `${endPercent}px`;
+
+            if (audioDuration) {
+                const startTime = (startValue / 100) * audioDuration;
+                const endTime = (endValue / 100) * audioDuration;
+                startTimeLabel.textContent = startTime.toFixed(3);
+                endTimeLabel.textContent = endTime.toFixed(3);
+                
+                const audioPlayer = document.getElementById('audioPlayer');
+                audioPlayer.currentTime = startTime;
+                audioPlayer.ontimeupdate = function() {
+                    if (audioPlayer.currentTime >= endTime) {
+                        audioPlayer.currentTime = startTime;
+                    }
+                };
+            }
+        }
+
+        function handleMouseDown(e) {
+            if (e.target.classList.contains('range-handle')) {
+                isDragging = true;
+                currentHandle = e.target;
+                document.addEventListener('mousemove', handleMouseMove);
+                document.addEventListener('mouseup', handleMouseUp);
+            }
+        }
+
+        function handleMouseMove(e) {
+            if (!isDragging) return;
+            
+            const trackRect = track.getBoundingClientRect();
+            let newPosition = (e.clientX - trackRect.left) / trackRect.width * 100;
+            newPosition = Math.max(0, Math.min(100, newPosition));
+
+            if (currentHandle === startHandle) {
+                startValue = Math.min(newPosition, endValue);
+            } else {
+                endValue = Math.max(newPosition, startValue);
+            }
+            
+            updateSelection();
+        }
+
+        function handleMouseUp() {
+            isDragging = false;
+            currentHandle = null;
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+        }
+
+        track.addEventListener('mousedown', handleMouseDown);
+
+        let resizeTimeout;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(() => {
+                if (audioBuffer) {
+                    drawWaveform(audioBuffer);
+                }
+            }, 250);
+        });
+
+        document.getElementById('mp3Upload').addEventListener('change', async function(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            originalFileName = file.name.replace(/\.[^/.]+$/, "");
+            const arrayBuffer = await file.arrayBuffer();
+            
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            
+            try {
+                audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                
+                const audioPlayer = document.getElementById('audioPlayer');
+                audioPlayer.src = URL.createObjectURL(file);
+                
+                audioDuration = audioBuffer.duration;
+                startValue = 0;
+                endValue = 100;
+                updateSelection();
+                
+                drawWaveform(audioBuffer);
+                
+                document.getElementById('downloadButton').disabled = false;
+                
+                audioPlayer.play();
+            } catch (e) {
+                console.error('Error decoding audio:', e);
+                alert('音声ファイルの読み込みに失敗しました。');
+            }
+        });
+
+        async function downloadAudio() {
+            if (!audioBuffer) return;
+
+            const startTime = (startValue / 100) * audioDuration;
+            const endTime = (endValue / 100) * audioDuration;
+            
+            const loading = document.getElementById('loading');
+            const downloadButton = document.getElementById('downloadButton');
+            loading.style.display = 'block';
+            downloadButton.disabled = true;
+
+            try {
+                const startFrame = Math.floor(startTime * audioBuffer.sampleRate);
+                const endFrame = Math.floor(endTime * audioBuffer.sampleRate);
+                const frameCount = endFrame - startFrame;
+
+                const trimmedBuffer = audioContext.createBuffer(
+                    audioBuffer.numberOfChannels,
+                    frameCount,
+                    audioBuffer.sampleRate
+                );
+
+                for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+                    const originalData = audioBuffer.getChannelData(channel);
+                    const trimmedData = trimmedBuffer.getChannelData(channel);
+                    for (let i = 0; i < frameCount; i++) {
+                        trimmedData[i] = originalData[startFrame + i];
+                    }
+                }
+
+                const wavBlob = await bufferToWave(trimmedBuffer);
+                const url = URL.createObjectURL(wavBlob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = `${originalFileName}_trimmed.wav`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+
+            } catch (error) {
+                console.error('Error processing audio:', error);
+                alert('音声の処理中にエラーが発生しました。');
+            } finally {
+                loading.style.display = 'none';
+                downloadButton.disabled = false;
+            }
+        }
+
+        function bufferToWave(audioBuffer) {
+            const numOfChan = audioBuffer.numberOfChannels;
+            const length = audioBuffer.length * numOfChan * 2 + 44;
+            const buffer = new ArrayBuffer(length);
+            const view = new DataView(buffer);
+            const channels = [];
+            let pos = 0;
+
+            setUint32(0x46464952);
+            setUint32(length - 8);
+            setUint32(0x45564157);
+            setUint32(0x20746d66);
+            setUint32(16);
+            setUint16(1);
+            setUint16(numOfChan);
+            setUint32(audioBuffer.sampleRate);
+            setUint32(audioBuffer.sampleRate * 2 * numOfChan);
+            setUint16(numOfChan * 2);
+            setUint16(16);
+            setUint32(0x61746164);
+            setUint32(length - pos - 4);
+
+            for (let channel = 0; channel < numOfChan; channel++) {
+                channels.push(audioBuffer.getChannelData(channel));
+            }
+
+            for (let i = 0; i < audioBuffer.length; i++) {
+                for (let channel = 0; channel < numOfChan; channel++) {
+                    let sample = Math.max(-1, Math.min(1, channels[channel][i]));
+                    sample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+                    setUint16(sample);
+                }
+            }
+
+            return new Blob([buffer], { type: 'audio/wav' });
+
+            function setUint16(data) {
+                view.setUint16(pos, data, true);
+                pos += 2;
+            }
+
+            function setUint32(data) {
+                view.setUint32(pos, data, true);
+                pos += 4;
+            }
+        }
+    </script>
+</body>
+</html>
